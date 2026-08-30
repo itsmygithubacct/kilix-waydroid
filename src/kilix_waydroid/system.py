@@ -1,20 +1,40 @@
-"""Read-only Waydroid and host readiness probes."""
+"""Read-only Waydroid and host readiness probes.
+
+Every host surface these probes touch is reached through :class:`Host`, so a
+test can seal the whole world the probes see into one directory and prove the
+read-only guarantee by construction rather than by inspection.  That guarantee
+is the point of this module: `doctor` and `status` mirror the OS helper's
+``--verify`` contract and must never install, elevate, or write.
+"""
 
 from __future__ import annotations
 
 import configparser
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 import gzip
 import os
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Callable, Iterable
+from types import MappingProxyType
+from typing import Callable, Iterable, Mapping
 
 from . import sdk
 
 
 Run = Callable[..., subprocess.CompletedProcess]
+
+REQUIRED_SDK = "1.17"
+
+#: Paths the application must never write.  Named here so the non-installing
+#: proof asserts the design document's own list rather than a paraphrase.
+PROTECTED_ROOTS = (
+    "/usr",
+    "/var/lib/waydroid",
+    "/usr/share/waydroid-extra",
+    "/etc/modprobe.d",
+    "/etc/modules-load.d",
+)
 
 
 @dataclass(frozen=True)
@@ -38,15 +58,51 @@ class WaydroidStatus:
     returncode: int = 0
     error: str = ""
 
+    def record(self) -> dict[str, object]:
+        return asdict(self)
 
-def resolve_command(command: str) -> str | None:
+
+def _environment() -> Mapping[str, str]:
+    return MappingProxyType(dict(os.environ))
+
+
+@dataclass(frozen=True)
+class Host:
+    """The complete host surface the read-only probes are allowed to read."""
+
+    workdir: str = "/var/lib/waydroid"
+    dev_root: str = "/dev"
+    boot_root: str = "/boot"
+    proc_config: str = "/proc/config.gz"
+    runtime_root: str = "/run/user"
+    release: str = field(default_factory=lambda: os.uname().release)
+    uid: int = field(default_factory=os.getuid)
+    environ: Mapping[str, str] = field(default_factory=_environment)
+    runner: Run = subprocess.run
+    which: Callable[[str], str | None] = shutil.which
+    load_sdk: Callable[[str], object] = sdk.load
+
+    def sealed(self, root: str) -> "Host":
+        """Return a view whose every path lives under ``root``."""
+        base = Path(root)
+        return replace(
+            self,
+            workdir=str(base / "var/lib/waydroid"),
+            dev_root=str(base / "dev"),
+            boot_root=str(base / "boot"),
+            proc_config=str(base / "proc/config.gz"),
+            runtime_root=str(base / "run/user"),
+        )
+
+
+def resolve_command(command: str, *, which: Callable[[str], str | None] = shutil.which) -> str | None:
     if not command:
         return None
     if os.path.isabs(command):
         return command if os.path.isfile(command) and os.access(command, os.X_OK) else None
     if os.sep in command or (os.path.altsep and os.path.altsep in command):
         return None
-    return shutil.which(command)
+    return which(command)
 
 
 def command_version(
@@ -91,6 +147,7 @@ def waydroid_status(
     *,
     runner: Run = subprocess.run,
 ) -> WaydroidStatus:
+    """Ask Waydroid for its session state. This reads; it never starts anything."""
     try:
         result = runner(
             [executable, "--details-to-stdout", "status"],
@@ -106,11 +163,10 @@ def waydroid_status(
     return parse_status(result.stdout or "", returncode=result.returncode)
 
 
-def _kernel_config() -> dict[str, str] | None:
-    release = os.uname().release
+def _kernel_config(host: Host) -> dict[str, str] | None:
     candidates = (
-        Path(f"/boot/config-{release}"),
-        Path("/proc/config.gz"),
+        Path(host.boot_root) / f"config-{host.release}",
+        Path(host.proc_config),
     )
     for path in candidates:
         try:
@@ -119,18 +175,19 @@ def _kernel_config() -> dict[str, str] | None:
                     lines = handle.readlines()
             else:
                 lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except (OSError, EOFError, gzip.BadGzipFile):
             continue
         values = {}
         for line in lines:
             if line.startswith("CONFIG_") and "=" in line:
                 key, value = line.split("=", 1)
-                values[key] = value
+                values[key] = value.strip()
         return values
     return None
 
 
-def _configured_binder_nodes(config: Path) -> tuple[str, ...]:
+def configured_binder_nodes(config: Path) -> tuple[str, ...]:
+    """Follow the helper's configured device names rather than the legacy trio."""
     names = ("binder", "vndbinder", "hwbinder")
     parser = configparser.ConfigParser(interpolation=None)
     try:
@@ -141,17 +198,24 @@ def _configured_binder_nodes(config: Path) -> tuple[str, ...]:
     return tuple(section.get(name, name).strip() or name for name in names)
 
 
-def _binder_paths(names: Iterable[str]) -> tuple[str, ...]:
+def _missing_binder_nodes(names: Iterable[str], *, dev_root: str) -> tuple[str, ...]:
+    root = Path(dev_root)
     missing = []
     for name in names:
-        choices = (Path("/dev") / name, Path("/dev/binderfs") / name)
+        choices = (root / name, root / "binderfs" / name)
         if not any(path.exists() for path in choices):
             missing.append(name)
     return tuple(missing)
 
 
-def _service_check(*, runner: Run) -> Check:
-    if not shutil.which("systemctl"):
+def _initialized(host: Host) -> bool:
+    root = Path(host.workdir)
+    return (root / "waydroid.cfg").is_file() and (root / "rootfs").is_dir()
+
+
+def _service_check(host: Host) -> Check:
+    systemctl = host.which("systemctl")
+    if not systemctl:
         return Check(
             "container-service",
             "warning",
@@ -160,8 +224,8 @@ def _service_check(*, runner: Run) -> Check:
             required=False,
         )
     try:
-        result = runner(
-            ["systemctl", "is-active", "waydroid-container.service"],
+        result = host.runner(
+            [systemctl, "is-active", "waydroid-container.service"],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -183,23 +247,53 @@ def _service_check(*, runner: Run) -> Check:
     )
 
 
+def _audio_check(host: Host) -> Check:
+    """Report the host audio runtime the nested session will reuse."""
+    runtime = host.environ.get("XDG_RUNTIME_DIR", "")
+    if not runtime or not os.path.isabs(runtime):
+        return Check(
+            "audio-runtime",
+            "warning",
+            "host audio runtime directory is not set",
+            "Android audio reuses the session's existing PipeWire or PulseAudio "
+            "sockets; without XDG_RUNTIME_DIR there is nothing to carry across.",
+            required=False,
+        )
+    if host.environ.get("PIPEWIRE_RUNTIME_DIR") or os.path.exists(
+        os.path.join(runtime, "pipewire-0")
+    ):
+        return Check("audio-runtime", "ok", "PipeWire session audio is available")
+    if host.environ.get("PULSE_RUNTIME_PATH") or os.path.isdir(
+        os.path.join(runtime, "pulse")
+    ):
+        return Check("audio-runtime", "ok", "PulseAudio session audio is available")
+    return Check(
+        "audio-runtime",
+        "warning",
+        "no session audio socket was found",
+        "Android will start without sound until the session audio service runs.",
+        required=False,
+    )
+
+
 def doctor_checks(
     *,
     waydroid: str = "waydroid",
     weston: str = "weston",
-    workdir: str = "/var/lib/waydroid",
+    host: Host | None = None,
     require_display: bool = False,
     require_kilix: bool = False,
-    runner: Run = subprocess.run,
 ) -> list[Check]:
+    """Probe every launch prerequisite. Reads only; installs and writes nothing."""
+    host = host or Host()
     checks: list[Check] = []
     for check_id, command, label in (
         ("waydroid-command", waydroid, "Waydroid"),
         ("weston-command", weston, "Weston"),
     ):
-        path = resolve_command(command)
+        path = resolve_command(command, which=host.which)
         if path:
-            version = command_version(path, runner=runner)
+            version = command_version(path, runner=host.runner)
             detail = version or path
             checks.append(Check(check_id, "ok", f"{label} command is available", detail))
         else:
@@ -211,7 +305,7 @@ def doctor_checks(
             ))
 
     try:
-        host_sdk = sdk.load("1.16")
+        host_sdk = host.load_sdk(REQUIRED_SDK)
     except sdk.SDKUnavailable as error:
         checks.append(Check("kilix-sdk", "error", "compatible Kilix SDK is missing", str(error)))
     else:
@@ -219,13 +313,13 @@ def doctor_checks(
             "kilix-sdk",
             "ok",
             "Kilix nested-Wayland SDK is available",
-            getattr(host_sdk.core, "SDK_VERSION", "1.16+"),
+            getattr(getattr(host_sdk, "core", None), "SDK_VERSION", f"{REQUIRED_SDK}+"),
         ))
 
-    root = Path(workdir)
+    root = Path(host.workdir)
     config = root / "waydroid.cfg"
-    rootfs = root / "rootfs"
-    if config.is_file() and rootfs.is_dir():
+    initialized = _initialized(host)
+    if initialized:
         checks.append(Check("initialized", "ok", "Waydroid is initialized"))
     else:
         checks.append(Check(
@@ -235,8 +329,8 @@ def doctor_checks(
             "Plebian-OS first-use setup initializes the pinned Android images.",
         ))
 
-    session_bus = bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS")) or Path(
-        f"/run/user/{os.getuid()}/bus").exists()
+    session_bus = bool(host.environ.get("DBUS_SESSION_BUS_ADDRESS")) or Path(
+        host.runtime_root, str(host.uid), "bus").exists()
     checks.append(Check(
         "session-bus",
         "ok" if session_bus else "error",
@@ -244,7 +338,7 @@ def doctor_checks(
         "Waydroid manages its user session over D-Bus." if not session_bus else "",
     ))
 
-    kernel = _kernel_config()
+    kernel = _kernel_config(host)
     if kernel is None:
         checks.append(Check(
             "binder-kernel",
@@ -263,22 +357,37 @@ def doctor_checks(
             "Plebian-OS 0.2.0 needs a Binder-capable kernel.",
         ))
 
-    missing_nodes = _binder_paths(_configured_binder_nodes(config))
-    if missing_nodes:
+    missing_nodes = _missing_binder_nodes(
+        configured_binder_nodes(config), dev_root=host.dev_root
+    )
+    if not missing_nodes:
+        checks.append(Check("binder-devices", "ok", "configured Binder devices are present"))
+    elif initialized:
+        # Once first-use setup has run, nothing else is going to create these.
+        # Reporting them as a warning here would conceal a launch failure, which
+        # is precisely what the read-only contract forbids.
+        checks.append(Check(
+            "binder-devices",
+            "error",
+            "Binder device nodes are absent: " + ", ".join(missing_nodes),
+            "The installed runtime configures binder_linux to expose these at "
+            "boot. Reboot, or re-run Plebian-OS Waydroid setup, before launching.",
+        ))
+    else:
         checks.append(Check(
             "binder-devices",
             "warning",
             "Binder device nodes are not currently present",
-            "The root-owned Waydroid container service may create: " + ", ".join(missing_nodes),
+            "Plebian-OS first-use setup loads binder_linux and creates: "
+            + ", ".join(missing_nodes),
             required=False,
         ))
-    else:
-        checks.append(Check("binder-devices", "ok", "configured Binder devices are present"))
 
-    checks.append(_service_check(runner=runner))
+    checks.append(_service_check(host))
+    checks.append(_audio_check(host))
 
     if require_display:
-        display = os.environ.get("DISPLAY", "")
+        display = host.environ.get("DISPLAY", "")
         checks.append(Check(
             "x-display",
             "ok" if display else "error",
@@ -288,17 +397,17 @@ def doctor_checks(
 
     if require_kilix:
         launcher = None
-        home = os.environ.get("KILIX_HOME", "")
+        home = host.environ.get("KILIX_HOME", "")
         if home:
             candidate = os.path.join(os.path.abspath(os.path.expanduser(home)), "kilix")
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 launcher = candidate
-        launcher = launcher or shutil.which("kilix")
+        launcher = launcher or host.which("kilix")
         checks.append(Check(
             "kilix-launcher",
             "ok" if launcher else "error",
             "Kilix launcher is available" if launcher else "Kilix launcher is missing",
-            launcher or "The pane surface requires the Plebian-OS 0.2.0 Kilix host.",
+            launcher or "The pane surface requires the Plebian-OS Kilix host.",
         ))
     return checks
 
@@ -309,8 +418,12 @@ def required_failures(checks: Iterable[Check]) -> list[Check]:
 
 __all__ = [
     "Check",
+    "Host",
+    "PROTECTED_ROOTS",
+    "REQUIRED_SDK",
     "WaydroidStatus",
     "command_version",
+    "configured_binder_nodes",
     "doctor_checks",
     "parse_status",
     "required_failures",

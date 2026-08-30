@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import os
+import re
 import signal
 import subprocess
+import sys
 
 from . import system
+
+
+PACKAGE_NAME = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_][A-Za-z0-9_]*)+$"
+)
+_MAX_PACKAGE_NAME = 255
 
 
 class LaunchError(RuntimeError):
@@ -18,6 +26,15 @@ class LaunchInterrupted(BaseException):
     def __init__(self, signum: int):
         self.signum = int(signum)
         super().__init__(f"interrupted by signal {self.signum}")
+
+
+def package_name(value: str) -> str:
+    """Validate an Android package name before it reaches an argument list."""
+    if not isinstance(value, str) or len(value) > _MAX_PACKAGE_NAME:
+        raise LaunchError("Android package name is not a valid identifier")
+    if PACKAGE_NAME.fullmatch(value) is None:
+        raise LaunchError(f"Android package name is not a valid identifier: {value!r}")
+    return value
 
 
 @contextmanager
@@ -38,6 +55,39 @@ def cleanup_signals():
             signal.signal(signum, handler)
 
 
+@contextmanager
+def selection_bridge(host_sdk, socket_path: str, *, enabled: bool = True):
+    """Carry the clipboard both ways for the life of one session.
+
+    A host without XFIXES, or a compositor without a data device, loses the
+    clipboard and keeps the session: the bridge is a feature of the surface,
+    not a prerequisite for running Android.
+    """
+    if not enabled:
+        yield None
+        return
+    module = getattr(host_sdk, "clipboard", None)
+    if module is None:
+        yield None
+        return
+    bridge = module.SelectionBridge(socket_path)
+    try:
+        bridge.open()
+    except Exception as error:  # noqa: BLE001 - reported, never fatal
+        bridge.close()
+        print(
+            f"kilix-waydroid: clipboard sharing is unavailable ({error})",
+            file=sys.stderr,
+        )
+        yield None
+        return
+    bridge.start()
+    try:
+        yield bridge
+    finally:
+        bridge.close()
+
+
 def run_window(
     host_sdk,
     *,
@@ -45,6 +95,8 @@ def run_window(
     height: int,
     waydroid: str,
     weston: str,
+    client: tuple[str, ...] = ("show-full-ui",),
+    clipboard: bool = True,
 ) -> int:
     """Run one owned Waydroid session until its Weston window closes."""
     session_name = f"waydroid-{os.getpid()}"
@@ -71,14 +123,17 @@ def run_window(
         command = [waydroid]
         if debug:
             command.append("--details-to-stdout")
-        command.append("show-full-ui")
-        client = nested.launch_client(
-            "waydroid",
-            command,
-            stdout=output,
-            stderr=output,
-        )
-        exited = nested.wait(client)
+        command.extend(client)
+        with selection_bridge(
+            host_sdk, nested.socket_path, enabled=clipboard
+        ):
+            process = nested.launch_client(
+                "waydroid",
+                command,
+                stdout=output,
+                stderr=output,
+            )
+            exited = nested.wait(process)
         if exited.source == "compositor":
             if exited.returncode != 0:
                 diagnostic = nested.compositor_diagnostic()
@@ -102,4 +157,12 @@ def run_window(
         )
 
 
-__all__ = ["LaunchError", "LaunchInterrupted", "cleanup_signals", "run_window"]
+__all__ = [
+    "LaunchError",
+    "LaunchInterrupted",
+    "PACKAGE_NAME",
+    "cleanup_signals",
+    "package_name",
+    "run_window",
+    "selection_bridge",
+]
