@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,22 @@ from kilix_waydroid import system
 
 
 class SystemTests(unittest.TestCase):
+    def test_compressed_kernel_config_normalizes_binder_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            compressed = root / "config.gz"
+            for value in ("y", "m", "n"):
+                with self.subTest(value=value):
+                    with gzip.open(compressed, "wt", encoding="utf-8") as stream:
+                        stream.write(f"CONFIG_ANDROID_BINDER_IPC={value}\nCONFIG_ANDROID_BINDERFS=y\r\n")
+                    def private_path(value):
+                        return compressed if str(value) == "/proc/config.gz" else root / "missing"
+                    with mock.patch.object(system, "Path", side_effect=private_path):
+                        config = system._kernel_config()
+                    self.assertEqual(config["CONFIG_ANDROID_BINDER_IPC"], value)
+                    self.assertEqual(config["CONFIG_ANDROID_BINDERFS"], "y")
+                    self.assertEqual(config["CONFIG_ANDROID_BINDER_IPC"] in {"y", "m"}, value != "n")
+
     def test_status_parser_keeps_session_container_and_display(self):
         status = system.parse_status(
             "Session:\tRUNNING\nContainer:\tFROZEN\n"

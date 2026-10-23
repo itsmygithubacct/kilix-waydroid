@@ -125,7 +125,7 @@ def _kernel_config() -> dict[str, str] | None:
         for line in lines:
             if line.startswith("CONFIG_") and "=" in line:
                 key, value = line.split("=", 1)
-                values[key] = value
+                values[key] = value.rstrip("\r\n")
         return values
     return None
 
