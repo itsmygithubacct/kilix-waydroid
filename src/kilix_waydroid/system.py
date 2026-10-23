@@ -65,7 +65,10 @@ def command_version(
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return (result.stdout or "").strip().splitlines()[0] if result.returncode == 0 else ""
+    if result.returncode != 0:
+        return ""
+    lines = (result.stdout or "").strip().splitlines()
+    return lines[0] if lines else ""
 
 
 def parse_status(output: str, *, returncode: int = 0) -> WaydroidStatus:
@@ -211,7 +214,7 @@ def doctor_checks(
             ))
 
     try:
-        host_sdk = sdk.load("1.16")
+        host_sdk = sdk.load("1.19")
     except sdk.SDKUnavailable as error:
         checks.append(Check("kilix-sdk", "error", "compatible Kilix SDK is missing", str(error)))
     else:
@@ -219,7 +222,7 @@ def doctor_checks(
             "kilix-sdk",
             "ok",
             "Kilix nested-Wayland SDK is available",
-            getattr(host_sdk.core, "SDK_VERSION", "1.16+"),
+            getattr(host_sdk.core, "SDK_VERSION", "1.19+"),
         ))
 
     root = Path(workdir)
@@ -260,7 +263,7 @@ def doctor_checks(
             "binder-kernel",
             "error",
             "kernel Android Binder IPC is disabled",
-            "Plebian-OS 0.2.0 needs a Binder-capable kernel.",
+            "Plebian-OS 0.2.2 needs a Binder-capable kernel.",
         ))
 
     missing_nodes = _binder_paths(_configured_binder_nodes(config))
@@ -298,7 +301,7 @@ def doctor_checks(
             "kilix-launcher",
             "ok" if launcher else "error",
             "Kilix launcher is available" if launcher else "Kilix launcher is missing",
-            launcher or "The pane surface requires the Plebian-OS 0.2.0 Kilix host.",
+            launcher or "The pane surface requires the Plebian-OS 0.2.2 Kilix host.",
         ))
     return checks
 

@@ -124,7 +124,7 @@ def _preflight(
 
 
 def _run_window(args) -> int:
-    host_sdk = sdk.load("1.16")
+    host_sdk = sdk.load("1.19")
     _preflight(
         host_sdk=host_sdk,
         lazy_install=getattr(args, "install", True),
@@ -148,7 +148,7 @@ def _run_window(args) -> int:
 
 
 def _run_pane(args) -> int:
-    host_sdk = sdk.load("1.16")
+    host_sdk = sdk.load("1.19")
     _preflight(
         host_sdk=host_sdk,
         lazy_install=getattr(args, "install", True),

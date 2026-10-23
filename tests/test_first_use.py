@@ -17,7 +17,7 @@ class FirstUseTests(unittest.TestCase):
             ("initialized", True),
             ("binder-kernel", False),
             ("session-bus", False),
-            ("container-service", False),
+            ("container-service", True),
         ):
             with self.subTest(check_id=check_id):
                 self.assertEqual(first_use.needed([

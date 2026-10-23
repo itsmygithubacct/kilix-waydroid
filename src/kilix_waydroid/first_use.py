@@ -15,8 +15,9 @@ _INSTALL_MANAGED_CHECKS = frozenset((
     "waydroid-command",
     "weston-command",
     "initialized",
+    # Service activation is the final setup step and can fail after init.
+    "container-service",
 ))
-_INSTALL_SIDE_EFFECT_CHECKS = frozenset(("container-service",))
 
 
 def needed(checks: Iterable[system.Check]) -> bool:
@@ -30,7 +31,6 @@ def needed(checks: Iterable[system.Check]) -> bool:
     )
     blockers = any(
         check.check_id not in _INSTALL_MANAGED_CHECKS
-        and check.check_id not in _INSTALL_SIDE_EFFECT_CHECKS
         for check in failures
     )
     return managed and not blockers

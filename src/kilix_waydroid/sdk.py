@@ -30,7 +30,7 @@ def _host_config() -> str | None:
     return str(candidate) if candidate.is_dir() else None
 
 
-def load(required: str = "1.16") -> KilixSDK:
+def load(required: str = "1.19") -> KilixSDK:
     """Return the compatible SDK exported by the active Kilix host."""
     config = _host_config()
     if config and config not in sys.path:
@@ -48,7 +48,7 @@ def load(required: str = "1.16") -> KilixSDK:
     except (ImportError, ModuleNotFoundError, RuntimeError) as error:
         raise SDKUnavailable(
             f"kilix_sdk {required} or newer is required; launch through the "
-            "Plebian-OS 0.2.0 Kilix host"
+            "Plebian-OS 0.2.2 Kilix host"
         ) from error
 
 

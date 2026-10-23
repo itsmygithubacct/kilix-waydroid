@@ -2,8 +2,8 @@
 
 Kilix Waydroid presents a Waydroid Android session inside a Kilix graphical
 pane, a Kilix 95 application window, or an IceWM application window. It is a
-Plebian-OS 0.2.0 feature and is intentionally outside the pending 0.1.9
-closure.
+Plebian-OS 0.2.2 application. Enabling it requires the matching host SDK and
+OS provisioning.
 
 Waydroid is a containerized Android runtime, not a CPU or hardware emulator.
 Android therefore uses the host kernel and is available only on a compatible
@@ -58,14 +58,16 @@ or IceWM window surface.
 
 The Plebian-OS image must provide:
 
-- Kilix SDK 1.16 or newer;
+- Kilix SDK 1.19 or newer;
 - a Binder-capable kernel and the Waydroid Binder devices;
-- a user D-Bus session; and
+- a user D-Bus session, xterm, and sudo;
+- the installed Kilix private-bus supervisor and its systemd/polkit boundary; and
 - the root-owned Plebian-OS Waydroid installer closure.
 
 On the first real launch, missing Waydroid, Weston, or Android initialization
-causes the app to request the fixed Plebian-OS installer through
-`kilix_sdk.privilege`. A terminal launch uses its current terminal; Kilix 95,
+or an inactive container service causes the app to request the fixed
+Plebian-OS installer through `kilix_sdk.privilege`, with explicit confirmation
+before elevation. A terminal launch uses its current terminal; Kilix 95,
 IceWM, and other graphical launches open the prompt and progress in `xterm`
 inside their existing X surface. The app then reruns its complete read-only
 preflight and starts Android only if every required check passes. Cancellation
@@ -86,13 +88,13 @@ window; an unrelated pre-existing session is never stopped implicitly.
 
 [`packaging/kilix-content.json`](packaging/kilix-content.json) is the shared
 schema-3 catalog record. It declares a system application with `xpane` launch
-mode and single-instance lifecycle. Once the Plebian-OS 0.2.0 catalog consumes
+mode and single-instance lifecycle. Once the Plebian-OS 0.2.2 catalog consumes
 that record, the existing generic application menus expose it in both Kilix 95
 and IceWM without provider-specific launch code.
 
 ## Development
 
-Point the app at the 0.2.0 Kilix worktree that exports SDK 1.16, then run:
+Point the app at the matching Kilix worktree that exports SDK 1.19, then run:
 
 ```bash
 export KILIX_HOME=/path/to/kilix
@@ -108,6 +110,16 @@ runtime packages and Android images have not been installed.
 
 `make install PREFIX=/usr/local` installs the launcher and its standard-library
 Python package. Plebian-OS separately stages the immutable first-use closure.
+
+The optional ownership tests use fixture executables, not Android or Weston:
+
+```bash
+TMPDIR=/tmp KILIX_WAYDROID_TEST_KILIX_HOME=/path/to/kilix make test
+```
+
+They require the installed host containment service matching the SDK source.
+They cover real process ownership and descendant cleanup, not Android graphics,
+audio, input, first-use downloads, or physical/ISO acceptance.
 
 ## License
 

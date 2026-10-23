@@ -110,6 +110,40 @@ class CLITests(unittest.TestCase):
         install.assert_called_once_with(host_sdk)
         self.assertEqual(doctor.call_count, 2)
 
+    def test_preflight_retries_setup_after_late_service_failure(self):
+        installed = [
+            system.Check(check_id, "ok", "installed")
+            for check_id in ("waydroid-command", "weston-command", "initialized")
+        ]
+        incomplete = installed + [system.Check(
+            "container-service", "error", "inactive")]
+        ready = installed + [system.Check("container-service", "ok", "active")]
+        privilege = SimpleNamespace(run_helper=mock.Mock(side_effect=(1, 0)))
+        host_sdk = SimpleNamespace(privilege=privilege)
+        with mock.patch.object(system, "doctor_checks",
+                               side_effect=(incomplete, incomplete, ready)) as doctor, \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(cli.runtime.LaunchError, "launch again to retry"):
+                cli._preflight(host_sdk=host_sdk, lazy_install=True)
+            self.assertEqual(cli._preflight(host_sdk=host_sdk, lazy_install=True), ready)
+        self.assertEqual(doctor.call_count, 3)
+        self.assertEqual(privilege.run_helper.call_args_list, [mock.call(
+            cli.first_use.SYSTEM_INSTALLER,
+            title="Install Android + Weston (about 1 GB)",
+        )] * 2)
+
+    def test_service_retry_still_rejects_unrelated_or_persistent_failures(self):
+        service = system.Check("container-service", "error", "inactive")
+        for blocker in (None, system.Check("session-bus", "error", "missing")):
+            checks = [service] + ([blocker] if blocker else [])
+            with self.subTest(blocker=blocker), \
+                    mock.patch.object(system, "doctor_checks", return_value=checks), \
+                    mock.patch.object(cli.first_use, "install") as install, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(cli.runtime.LaunchError, "prerequisites"):
+                    cli._preflight(host_sdk=object(), lazy_install=True)
+                self.assertEqual(install.call_count, 0 if blocker else 1)
+
     def test_preflight_never_installs_for_opt_out_or_custom_commands(self):
         missing = [system.Check(
             "weston-command", "error", "Weston command is missing")]

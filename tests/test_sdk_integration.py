@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import time
 import textwrap
 import unittest
 from unittest import mock
@@ -64,7 +65,7 @@ class SDKIntegrationTests(unittest.TestCase):
                 "KILIX_SESSION_HOME": str(root / "session"),
             }
             with mock.patch.dict(os.environ, environment, clear=True):
-                host_sdk = sdk.load("1.16")
+                host_sdk = sdk.load("1.19")
                 result = runtime.run_window(
                     host_sdk,
                     width=960,
@@ -80,6 +81,51 @@ class SDKIntegrationTests(unittest.TestCase):
                 if item.is_dir()
             ] if stream_root.exists() else []
             self.assertEqual(leftovers, [])
+
+
+    def test_owned_descendants_and_startup_failure_are_cleaned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            compositor = root / "weston-fixture"
+            compositor.write_text(
+                "#!/usr/bin/python3\n"
+                "import os, socket, sys, time\n"
+                "s = socket.socket(socket.AF_UNIX)\n"
+                "name = next(x.split('=', 1)[1] for x in sys.argv if x.startswith('--socket='))\n"
+                "s.bind(os.path.join(os.environ['XDG_RUNTIME_DIR'], name))\n"
+                "s.listen(4)\n"
+                "time.sleep(30)\n", encoding="utf-8")
+            compositor.chmod(0o700)
+            pidfile = root / "descendant.pid"
+            client_script = root / "client.py"
+            client_script.write_text(
+                "import os, pathlib, subprocess, sys, time\n"
+                "child = subprocess.Popen(['/usr/bin/python3', '-c', 'import time; time.sleep(60)'], start_new_session=True)\n"
+                "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+                "time.sleep(60)\n", encoding="utf-8")
+            environment = {"DISPLAY": ":77", "KILIX_HOME": KILIX_HOME,
+                           "KILIX_SESSION_HOME": str(root / "session")}
+            with mock.patch.dict(os.environ, environment, clear=True):
+                host_sdk = sdk.load("1.19")
+                with host_sdk.wayland.NestedWaylandSession("fixture-descendants", exclusive="waydroid-integration-test") as nested:
+                    nested.start_x11(960, 600, executable=str(compositor))
+                    client = nested.launch_client("fixture-client", ["/usr/bin/python3", str(client_script), str(pidfile)])
+                    deadline = time.monotonic() + 5
+                    while not pidfile.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertTrue(pidfile.exists(), "fixture child did not start")
+                    descendant = int(pidfile.read_text())
+                    self.assertIsNone(client.poll())
+                self.assertIsNotNone(client.poll())
+                deadline = time.monotonic() + 3
+                while Path(f"/proc/{descendant}").exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertFalse(Path(f"/proc/{descendant}").exists())
+                with self.assertRaisesRegex(RuntimeError, "before readiness"):
+                    with host_sdk.wayland.NestedWaylandSession("fixture-failure", exclusive="waydroid-integration-test") as failed:
+                        failed.start_x11(960, 600, executable="/usr/bin/false")
+                self.assertFalse(Path(failed.supervisor.runtime_dir).exists())
+                self.assertFalse(Path(nested.supervisor.runtime_dir).exists())
 
 
 if __name__ == "__main__":

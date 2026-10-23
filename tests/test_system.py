@@ -29,6 +29,34 @@ class SystemTests(unittest.TestCase):
                     self.assertEqual(config["CONFIG_ANDROID_BINDERFS"], "y")
                     self.assertEqual(config["CONFIG_ANDROID_BINDER_IPC"] in {"y", "m"}, value != "n")
 
+    def test_version_output_is_optional(self):
+        for output, status, expected in (
+            ("", 0, ""), (" \t\r\n ", 0, ""), (None, 0, ""),
+            (" fixture 1.0\nextra\n", 0, "fixture 1.0"),
+            ("fixture error", 1, ""),
+        ):
+            with self.subTest(output=output, status=status):
+                runner = mock.Mock(return_value=subprocess.CompletedProcess(
+                    [], status, stdout=output))
+                self.assertEqual(system.command_version("/fixture", runner=runner), expected)
+
+    def test_doctor_uses_command_path_when_version_output_is_blank(self):
+        for output in ("", " \t\r\n "):
+            with self.subTest(output=output), \
+                    mock.patch.object(system, "resolve_command", return_value="/fixture/tool"), \
+                    mock.patch.object(system.sdk, "load", return_value=SimpleNamespace(core=object())), \
+                    mock.patch.object(system, "Path"), \
+                    mock.patch.object(system, "_kernel_config", return_value=None), \
+                    mock.patch.object(system, "_binder_paths", return_value=()), \
+                    mock.patch.object(system, "_service_check", return_value=system.Check(
+                        "container-service", "ok", "active")):
+                runner = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=output))
+                checks = system.doctor_checks(runner=runner)
+                commands = [c for c in checks if c.check_id.endswith("-command")]
+                self.assertEqual(len(commands), 2)
+                self.assertTrue(all(c.status == "ok" and c.detail == "/fixture/tool"
+                                    for c in commands))
+
     def test_status_parser_keeps_session_container_and_display(self):
         status = system.parse_status(
             "Session:\tRUNNING\nContainer:\tFROZEN\n"
@@ -63,7 +91,7 @@ class SystemTests(unittest.TestCase):
                 "hwbinder=hwbinder\n",
                 encoding="utf-8",
             )
-            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.16.0"))
+            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"))
             with mock.patch.object(system.sdk, "load", return_value=fake_sdk), \
                     mock.patch.object(
                         system, "_kernel_config",
@@ -86,7 +114,7 @@ class SystemTests(unittest.TestCase):
 
     def test_doctor_does_not_treat_missing_binder_nodes_as_an_app_error(self):
         with tempfile.TemporaryDirectory() as temporary:
-            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.16.0"))
+            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"))
 
             def run(argv, **_kwargs):
                 if argv[0] == "systemctl":
