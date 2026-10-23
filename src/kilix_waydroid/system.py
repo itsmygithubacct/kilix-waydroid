@@ -213,6 +213,7 @@ def doctor_checks(
                 f"Plebian-OS first-use setup will install {command!r}.",
             ))
 
+    host_sdk = None
     try:
         host_sdk = sdk.load("1.19")
     except sdk.SDKUnavailable as error:
@@ -238,13 +239,14 @@ def doctor_checks(
             "Plebian-OS first-use setup initializes the pinned Android images.",
         ))
 
-    session_bus = bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS")) or Path(
-        f"/run/user/{os.getuid()}/bus").exists()
+    session_bus = bool(host_sdk and host_sdk.wayland.session_bus_address())
     checks.append(Check(
         "session-bus",
         "ok" if session_bus else "error",
         "user D-Bus session is available" if session_bus else "user D-Bus session is missing",
-        "Waydroid manages its user session over D-Bus." if not session_bus else "",
+        "Waydroid needs an explicit session-bus address or an owned socket at "
+        "$XDG_RUNTIME_DIR/bus; a compatible host SDK is required to resolve it."
+        if not session_bus else "",
     ))
 
     kernel = _kernel_config()

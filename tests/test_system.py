@@ -44,7 +44,7 @@ class SystemTests(unittest.TestCase):
         for output in ("", " \t\r\n "):
             with self.subTest(output=output), \
                     mock.patch.object(system, "resolve_command", return_value="/fixture/tool"), \
-                    mock.patch.object(system.sdk, "load", return_value=SimpleNamespace(core=object())), \
+                    mock.patch.object(system.sdk, "load", return_value=SimpleNamespace(core=object(), wayland=SimpleNamespace(session_bus_address=lambda: ""))), \
                     mock.patch.object(system, "Path"), \
                     mock.patch.object(system, "_kernel_config", return_value=None), \
                     mock.patch.object(system, "_binder_paths", return_value=()), \
@@ -56,6 +56,22 @@ class SystemTests(unittest.TestCase):
                 self.assertEqual(len(commands), 2)
                 self.assertTrue(all(c.status == "ok" and c.detail == "/fixture/tool"
                                     for c in commands))
+
+
+    def test_doctor_uses_host_session_bus_resolution(self):
+        for address in ("", "unix:path=/fixture/runtime%20dir/bus"):
+            resolver = mock.Mock(return_value=address)
+            host = SimpleNamespace(core=object(), wayland=SimpleNamespace(session_bus_address=resolver))
+            with self.subTest(address=address), \
+                    mock.patch.object(system.sdk, "load", return_value=host), \
+                    mock.patch.object(system, "resolve_command", return_value=None), \
+                    mock.patch.object(system, "_kernel_config", return_value=None), \
+                    mock.patch.object(system, "_binder_paths", return_value=()), \
+                    mock.patch.object(system, "_service_check", return_value=system.Check("container-service", "ok", "active")):
+                checks = system.doctor_checks()
+            check = next(c for c in checks if c.check_id == "session-bus")
+            self.assertEqual(check.status, "ok" if address else "error")
+            resolver.assert_called_once_with()
 
     def test_status_parser_keeps_session_container_and_display(self):
         status = system.parse_status(
@@ -91,7 +107,8 @@ class SystemTests(unittest.TestCase):
                 "hwbinder=hwbinder\n",
                 encoding="utf-8",
             )
-            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"))
+            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"),
+                                       wayland=SimpleNamespace(session_bus_address=lambda: os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")))
             with mock.patch.object(system.sdk, "load", return_value=fake_sdk), \
                     mock.patch.object(
                         system, "_kernel_config",
@@ -114,7 +131,8 @@ class SystemTests(unittest.TestCase):
 
     def test_doctor_does_not_treat_missing_binder_nodes_as_an_app_error(self):
         with tempfile.TemporaryDirectory() as temporary:
-            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"))
+            fake_sdk = SimpleNamespace(core=SimpleNamespace(SDK_VERSION="1.19.0"),
+                                       wayland=SimpleNamespace(session_bus_address=lambda: os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")))
 
             def run(argv, **_kwargs):
                 if argv[0] == "systemctl":
