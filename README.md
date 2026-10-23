@@ -2,10 +2,11 @@
 
 Kilix Waydroid presents a Waydroid Android session inside a Kilix graphical
 pane, a Kilix 95 application window, or an IceWM application window. It is a
-Plebian-OS 0.2.2 application candidate. Its selected revision is currently a
-provenance pin: managed application provisioning, catalog adoption and Android
-target acceptance remain pending. Enabling it requires the matching host SDK
-and OS provisioning.
+Plebian-OS 0.2.2 application candidate. The matching OS provisioner installs
+the exact selected revision into root-owned managed paths with source and
+provenance records. The shared Content catalog exposes the application.
+Installed-target and Android acceptance remain pending; launching requires
+the matching host SDK and the separate first-use runtime setup.
 
 Waydroid is a containerized Android runtime, not a CPU or hardware emulator.
 Android therefore uses the host kernel and is available only on a compatible
@@ -90,9 +91,9 @@ window; an unrelated pre-existing session is never stopped implicitly.
 
 [`packaging/kilix-content.json`](packaging/kilix-content.json) is the shared
 schema-3 catalog record. It declares a system application with `xpane` launch
-mode and single-instance lifecycle. Once the Plebian-OS 0.2.2 catalog consumes
-that record, the existing generic application menus expose it in both Kilix 95
-and IceWM without provider-specific launch code.
+mode and single-instance lifecycle. The matching Plebian-OS 0.2.2 catalog
+consumes that record, so the existing generic application menus expose it in
+both Kilix 95 and IceWM without provider-specific launch code.
 
 ## Development
 
@@ -113,7 +114,12 @@ selected OS first-use closure targets AMD64; ARM64 requires separately selected
 and qualified runtime artifacts.
 
 `make install PREFIX=/usr/local` installs the launcher and its standard-library
-Python package. Plebian-OS separately stages the immutable first-use closure.
+Python package. The OS provisioner stages this package from the exact
+`KILIX_WAYDROID_REF`, preserves its source archive and provenance under
+`/usr/local/share/kilix-waydroid`, and includes the installed files in its root
+transaction and update rollback inventory. Plebian-OS separately stages the
+immutable first-use closure; installing this application does not install
+Android images.
 
 The optional ownership tests use fixture executables, not Android or Weston:
 
