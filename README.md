@@ -2,8 +2,10 @@
 
 Kilix Waydroid presents a Waydroid Android session inside a Kilix graphical
 pane, a Kilix 95 application window, or an IceWM application window. It is a
-Plebian-OS 0.2.2 application. Enabling it requires the matching host SDK and
-OS provisioning.
+Plebian-OS 0.2.2 application candidate. Its selected revision is currently a
+provenance pin: managed application provisioning, catalog adoption and Android
+target acceptance remain pending. Enabling it requires the matching host SDK
+and OS provisioning.
 
 Waydroid is a containerized Android runtime, not a CPU or hardware emulator.
 Android therefore uses the host kernel and is available only on a compatible
@@ -105,8 +107,10 @@ make check
 ```
 
 The unit suite does not require Waydroid or Weston. A full host smoke test does,
-and `doctor` is expected to fail clearly on a machine where the future 0.2.0
-runtime packages and Android images have not been installed.
+and `doctor` is expected to fail clearly on a machine where the required
+runtime packages and Android images have not been installed. The currently
+selected OS first-use closure targets AMD64; ARM64 requires separately selected
+and qualified runtime artifacts.
 
 `make install PREFIX=/usr/local` installs the launcher and its standard-library
 Python package. Plebian-OS separately stages the immutable first-use closure.
